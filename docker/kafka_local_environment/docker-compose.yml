@@ -1,0 +1,32 @@
+version: '2'
+services:
+    zookeeper:
+        image: confluentinc/cp-zookeeper
+        container_name: zookeeper
+        ports:
+            - "2181:2181"
+        networks:
+            - kafka-network
+        volumes:
+            - "/opt/kafka_local_environment/zookeeper_data:/var/lib/zookeeper/data"
+            - "/opt/kafka_local_environment/zookeeper_log:/var/lib/zookeeper/log"
+        environment:
+            ZOOKEEPER_CLIENT_PORT: 2181
+    kafka:
+        image: confluentinc/cp-kafka
+        container_name: kafka
+        ports:
+            - "9092:9092"
+        networks:
+            - kafka-network
+        volumes:
+            - "/opt/kafka_local_environment/kafka_data:/var/lib/kafka/data"
+        environment:
+            KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+            KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092'
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: '1'
+        depends_on:
+            - zookeeper
+networks:
+    kafka-network:
+        driver: bridge
