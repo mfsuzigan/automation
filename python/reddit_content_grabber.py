@@ -102,7 +102,11 @@ def download_easy_images(args, elements_grid):
                     logging.info(f"Skipping duplicate image {file_name}")
 
                 else:
-                    with open(f"{args.target}/img/{file_name}", "wb") as image_file:
+                    image_title = element.find_element(By.TAG_NAME, "img").get_attribute("alt")
+                    file_name_parts = file_name.split(".")
+                    file_local_path = f"{args.target}/img/{file_name_parts[0]}__{image_title}.{file_name_parts[-1]}"
+
+                    with open(file_local_path, "wb") as image_file:
                         hashes.append(file_hash)
                         image_file.write(file_content)
                         counter += 1
@@ -112,6 +116,7 @@ def download_easy_images(args, elements_grid):
 
 
 def main():
+    logging.info("Starting")
     args = get_args()
     driver = webdriver.Chrome()
     logging.getLogger().setLevel(logging.INFO)
