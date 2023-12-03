@@ -1,4 +1,5 @@
 import argparse
+from argparse import Namespace
 import hashlib
 import os
 
@@ -14,6 +15,8 @@ from selenium.webdriver.support import expected_conditions as ec
 REDDIT_LOGIN_URL = "https://www.reddit.com/login"
 REDDIT_PROFILE_URL = "https://www.reddit.com/user"
 WEBDRIVER_RENDER_TIMEOUT_SECONDS = 5
+args: Namespace
+driver = webdriver.Chrome()
 
 
 def get_args():
@@ -21,11 +24,12 @@ def get_args():
     arg_parser.add_argument("--username", "-u", required=True, help="User's username")
     arg_parser.add_argument("--password", "-p", required=True, help="User's password")
     arg_parser.add_argument("--target", "-t", required=True, help="Target profile")
+    arg_parser.add_argument("--output", "-o", required=True, help="Output directory")
 
     return arg_parser.parse_args()
 
 
-def wait_until_visible(driver, locator):
+def wait_until_visible(locator):
     wait = WebDriverWait(driver, WEBDRIVER_RENDER_TIMEOUT_SECONDS)
     try:
         wait.until(ec.visibility_of_element_located(locator))
@@ -33,57 +37,57 @@ def wait_until_visible(driver, locator):
         pass
 
 
-def login(driver, args):
+def login():
     driver.get(REDDIT_LOGIN_URL)
     driver.find_element(By.ID, "loginUsername").send_keys(args.username)
     driver.find_element(By.ID, "loginPassword").send_keys(args.password)
     driver.find_element(By.TAG_NAME, "button").click()
-    wait_until_visible(driver, (By.ID, "USER_DROPDOWN_ID"))
+    wait_until_visible((By.ID, "USER_DROPDOWN_ID"))
 
 
 def file_is_image(name):
     return name.endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif'))
 
 
-def get_grid_size(driver):
+def get_grid_size():
     grid = driver.find_elements(By.XPATH,
                                 "//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/div")
     return len(grid)
 
 
-def full_page_scroll(driver):
-    grid_size = get_grid_size(driver)
+def full_page_scroll():
+    grid_size = get_grid_size()
     page_body = driver.find_element(By.TAG_NAME, "body")
     page_body.send_keys(Keys.END)
-    wait_until_visible(driver, (By.XPATH,
-                                f"//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/"
-                                f"div[{grid_size + 1}]"))
+    wait_until_visible((By.XPATH,
+                        f"//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/"
+                        f"div[{grid_size + 1}]"))
 
-    while get_grid_size(driver) != grid_size:
+    while get_grid_size() != grid_size:
         logging.info("Page scrolled")
-        grid_size = get_grid_size(driver)
+        grid_size = get_grid_size()
         page_body.send_keys(Keys.END)
-        wait_until_visible(driver, (By.XPATH,
-                                    f"//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/"
-                                    f"div[{grid_size + 1}]"))
+        wait_until_visible((By.XPATH,
+                            f"//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/"
+                            f"div[{grid_size + 1}]"))
 
 
 logging.info("Page finished scrolling")
 
 
-def download_content(driver, args):
+def download_user_content():
     driver.get(f"{REDDIT_PROFILE_URL}/{args.target}/submitted")
-    full_page_scroll(driver)
+    full_page_scroll()
     elements_grid = driver.find_elements(By.XPATH,
                                          "//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/div")
 
     logging.info(f"{len(elements_grid)} posts detected for target user {args.target}")
 
-    os.makedirs(f"{args.target}/img", exist_ok=True)
-    download_easy_images(args, elements_grid)
+    os.makedirs(f"{args.output}/{args.target}/img", exist_ok=True)
+    download_easy_images(elements_grid)
 
 
-def download_easy_images(args, elements_grid):
+def download_easy_images(elements_grid):
     counter = 0
     hashes = []
 
@@ -104,27 +108,29 @@ def download_easy_images(args, elements_grid):
                 else:
                     image_title = element.find_element(By.TAG_NAME, "img").get_attribute("alt")
                     file_name_parts = file_name.split(".")
-                    file_local_path = f"{args.target}/img/{file_name_parts[0]}__{image_title}.{file_name_parts[-1]}"
+                    file_local_path = (f"{args.output}/{args.target}/img/"
+                                       f"{args.target}__{file_name_parts[0]}__{image_title}.{file_name_parts[-1]}")
 
                     with open(file_local_path, "wb") as image_file:
                         hashes.append(file_hash)
                         image_file.write(file_content)
                         counter += 1
-                        logging.info(f"File {file_name} downloaded")
+                        logging.info(f"File {file_local_path.split('/')[-1]} downloaded")
 
     logging.info(f"{counter} images downloaded")
 
 
 def main():
-    logging.info("Starting")
-    args = get_args()
-    driver = webdriver.Chrome()
     logging.getLogger().setLevel(logging.INFO)
+    logging.info("Starting")
 
-    login(driver, args)
+    global args
+    args = get_args()
+
+    login()
     logging.info("Logged in")
 
-    download_content(driver, args)
+    download_user_content()
 
     logging.info("Done")
 
