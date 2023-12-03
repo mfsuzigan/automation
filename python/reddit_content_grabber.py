@@ -1,4 +1,7 @@
 import argparse
+import hashlib
+import os
+
 import requests
 import logging
 from selenium import webdriver
@@ -53,14 +56,16 @@ def full_page_scroll(driver):
     page_body = driver.find_element(By.TAG_NAME, "body")
     page_body.send_keys(Keys.END)
     wait_until_visible(driver, (By.XPATH,
-                                f"//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/div[{grid_size + 1}]"))
+                                f"//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/"
+                                f"div[{grid_size + 1}]"))
 
     while get_grid_size(driver) != grid_size:
         logging.info("Page scrolled")
         grid_size = get_grid_size(driver)
         page_body.send_keys(Keys.END)
         wait_until_visible(driver, (By.XPATH,
-                                    f"//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/div[{grid_size + 1}]"))
+                                    f"//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/"
+                                    f"div[{grid_size + 1}]"))
 
 
 logging.info("Page finished scrolling")
@@ -72,6 +77,16 @@ def download_content(driver, args):
     elements_grid = driver.find_elements(By.XPATH,
                                          "//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/div")
 
+    logging.info(f"{len(elements_grid)} posts detected for target user {args.target}")
+
+    os.makedirs(f"{args.target}/img", exist_ok=True)
+    download_easy_images(args, elements_grid)
+
+
+def download_easy_images(args, elements_grid):
+    counter = 0
+    hashes = []
+
     for element in elements_grid:
         image_link = element.find_element(By.TAG_NAME, "a")
 
@@ -80,17 +95,33 @@ def download_content(driver, args):
             file_name = image_url.split("/")[-1]
 
             if file_is_image(file_name):
-                with open(file_name, "wb") as image_file:
-                    image_file.write(requests.get(image_url).content)
-                    logging.info(f"File {image_file} downloaded")
+                file_content = requests.get(image_url).content
+                file_hash = hashlib.md5(file_content).hexdigest()
+
+                if hashes.__contains__(file_hash):
+                    logging.info(f"Skipping duplicate image {file_name}")
+
+                else:
+                    with open(f"{args.target}/img/{file_name}", "wb") as image_file:
+                        hashes.append(file_hash)
+                        image_file.write(file_content)
+                        counter += 1
+                        logging.info(f"File {file_name} downloaded")
+
+    logging.info(f"{counter} images downloaded")
 
 
 def main():
     args = get_args()
     driver = webdriver.Chrome()
     logging.getLogger().setLevel(logging.INFO)
+
     login(driver, args)
+    logging.info("Logged in")
+
     download_content(driver, args)
+
+    logging.info("Done")
 
 
 if __name__ == "__main__":
