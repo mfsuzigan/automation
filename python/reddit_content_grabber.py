@@ -1,6 +1,7 @@
 import argparse
 import time
 from urllib.parse import urlparse
+from urllib.parse import parse_qs
 from argparse import Namespace
 from selenium.webdriver import Chrome
 import hashlib
@@ -11,7 +12,7 @@ import logging
 
 from bs4 import BeautifulSoup
 from selenium import webdriver
-from selenium.common import TimeoutException
+from selenium.common import TimeoutException, NoSuchElementException
 from selenium.webdriver import Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
@@ -58,8 +59,13 @@ def login():
     wait_until_visible((By.ID, "USER_DROPDOWN_ID"))
 
 
-def file_is_image(name):
+def file_is_downloadable(name):
+    name = name.split("?")[0]
     return name.endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif'))
+
+
+def file_is_image(extension):
+    return extension.lower() in ['png', 'jpg', 'jpeg', 'tiff', 'bmp', 'gif']
 
 
 def get_grid_size():
@@ -140,7 +146,7 @@ def download_redgifs():
         title = soup.find("title").text
         user = title.split("by ")[1].split(" |")[0]
 
-        if save_file(link=redgif_src, title=title, path=VIDEO_OUTPUT_DIR, user=user):
+        if save_file(link=redgif_src, title=title, user=user):
             counter += 1
 
     logging.info(f"{counter} Redgifs files saved")
@@ -174,11 +180,19 @@ def download_complex_posts(composite_posts):
                 expand_button_probe[0].click()
                 time.sleep(TIME_SLEEP_SECONDS)
                 post_image_elements = post.find_elements(By.CSS_SELECTOR, "img[src]:not([alt='']):not([src=''])")
-                author = post.find_element(By.CSS_SELECTOR, "a[data-testid='post_author_link']").text.replace("u/", "")
+                author = get_post_author(post)
 
                 count += [download_image_element(image_element=i, user=author) for i in post_image_elements].count(True)
 
     logging.info(f"{count} files saved")
+
+
+def get_post_author(post):
+    try:
+        return post.find_element(By.CSS_SELECTOR, "a[data-testid='post_author_link']").text.replace("u/", "")
+
+    except NoSuchElementException:
+        return "UNKNOWN"
 
 
 def sanitize_string(str_input):
@@ -203,13 +217,22 @@ def download_image_element(image_element, user, file_content=None, image_src=Non
     if not image_src:
         image_src = image_element.get_attribute("src")
 
-    return save_file(content=file_content, link=image_src, title=image_title, path=IMAGE_OUTPUT_DIR, user=user)
+    return save_file(content=file_content, link=image_src, title=image_title, user=user)
 
 
-def save_file(link, user, title, path, content=None):
-    name_parts = urlparse(link).path.split(".")
+def save_file(link, user, title, content=None):
+    parsed_link = urlparse(link)
+    name_parts = parsed_link.path.split(".")
     name_identifier = name_parts[0].split("/")[-1]
-    extension = name_parts[-1]
+    format_probe = parse_qs(parsed_link.query)
+
+    if "format" in format_probe.keys():
+        extension = format_probe["format"][0]
+
+    else:
+        extension = name_parts[-1]
+
+    path = IMAGE_OUTPUT_DIR if file_is_image(extension) else VIDEO_OUTPUT_DIR
     local_path = f"{path}/{user}__{name_identifier}__{sanitize_string(title[:30])}.{extension}"
     content: bytes
 
@@ -239,14 +262,17 @@ def download_simple_image_posts(elements_grid):
     for element in elements_grid:
         href_probe = element.find_elements(By.TAG_NAME, "a")
 
-        if len(href_probe) > 0 and file_is_image(href_probe[0].get_attribute("href").split("/")[-1]):
+        if len(href_probe) > 0 and file_is_downloadable(href_probe[0].get_attribute("href").split("/")[-1]):
             # TODO: scroll if title is null
             image_title = element.find_element(By.TAG_NAME, "h3").text
-            author = element.find_element(By.CSS_SELECTOR, "a[data-testid='post_author_link']").text.replace("u/", "")
+            author = get_post_author(element)
             download_image_element(image_element=element.find_element(By.TAG_NAME, "img"),
                                    image_src=href_probe[0].get_attribute("href"),
                                    image_title=image_title, user=author)
             easy_images.append(element)
+
+        else:
+            pass
 
     logging.info(f"{len(easy_images)} files saved")
 
@@ -255,11 +281,18 @@ def download_simple_image_posts(elements_grid):
 
 def get_subreddit_content():
     driver.get(f"{REDDIT_SUB_URL}/{args.sub}/")
-    elements_grid = driver.find_elements(By.XPATH,
-                                         "//*[@id='AppRouter-main-content']/div/div/div[2]/div[4]/div[1]/div[5]/div")
+    posts_xpath = "//*[@id='AppRouter-main-content']/div/div/div[2]/div[4]/div[1]/div[5]/div"
+    elements_grid = driver.find_elements(By.XPATH, posts_xpath)
+    downloaded_elements = []
 
     create_output_directories()
-    easy_images = download_simple_image_posts(elements_grid)
+
+    while True:
+        download_simple_image_posts(elements_grid)
+        full_page_scroll_down()
+        time.sleep(TIME_SLEEP_SECONDS)
+        downloaded_elements.extend(elements_grid)
+        elements_grid = [e for e in driver.find_elements(By.XPATH, posts_xpath) if e not in downloaded_elements]
 
     # page_scroll_up()
     # time.sleep(TIME_SLEEP_SECONDS)
