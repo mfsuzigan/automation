@@ -22,6 +22,7 @@ REDDIT_PROFILE_URL = "https://www.reddit.com/user"
 IMAGE_OUTPUT_DIR = None
 VIDEO_OUTPUT_DIR = None
 WEBDRIVER_RENDER_TIMEOUT_SECONDS = 5
+TIME_SLEEP_SECONDS = 5
 args: Namespace
 driver: Chrome
 hashes = []
@@ -104,10 +105,11 @@ def get_user_content():
     create_output_directories()
 
     page_scroll_up()
-    time.sleep(2)
+    time.sleep(TIME_SLEEP_SECONDS)
     easy_images = download_simple_image_posts(elements_grid)
 
     page_scroll_up()
+    time.sleep(TIME_SLEEP_SECONDS)
     download_complex_posts([e for e in elements_grid if e not in easy_images])
 
     download_redgifs()
@@ -164,7 +166,7 @@ def download_complex_posts(composite_posts):
 
             if len(expand_button_probe) > 0:
                 expand_button_probe[0].click()
-                time.sleep(2)
+                time.sleep(TIME_SLEEP_SECONDS)
                 post_image_elements = post.find_elements(By.CSS_SELECTOR, "img[src]:not([alt='']):not([src=''])")
 
                 count += [download_image_element(image_element=i) for i in post_image_elements].count(True)
@@ -202,18 +204,23 @@ def save_file(link, title, path, content=None):
     name_identifier = name_parts[0].split("/")[-1]
     extension = name_parts[-1]
     local_path = f"{path}/{args.target}__{name_identifier}__{title[:30]}.{extension}"
+    content: bytes
 
-    if not content:
-        content = requests.get(link).content
-
-    if is_duplicate(content):
-        logging.info(f"Skipping duplicate file {name_identifier}")
+    if os.path.exists(local_path):
+        logging.info(f"Skipping existing file {local_path}")
 
     else:
-        with open(local_path, "wb") as image_file:
-            image_file.write(content)
-            logging.info(f"File {local_path.split('/')[-1]} downloaded")
-            return True
+        if not content:
+            content = requests.get(link).content
+
+        if is_duplicate(content):
+            logging.info(f"Skipping duplicate file {name_identifier}")
+
+        else:
+            with open(local_path, "wb") as image_file:
+                image_file.write(content)
+                logging.info(f"File {local_path.split('/')[-1]} downloaded")
+                return True
 
     return False
 
