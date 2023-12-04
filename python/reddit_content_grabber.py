@@ -264,6 +264,8 @@ def main():
 
 def webdriver_setup():
     options = webdriver.ChromeOptions()
+    options.add_argument("--no-sandbox")
+    options.add_argument('--disable-dev-shm-usage')
 
     if args.headless:
         options.add_argument("--headless")
