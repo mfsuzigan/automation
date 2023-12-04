@@ -19,6 +19,7 @@ from selenium.webdriver.support import expected_conditions as ec
 
 REDDIT_LOGIN_URL = "https://www.reddit.com/login"
 REDDIT_PROFILE_URL = "https://www.reddit.com/user"
+REDDIT_SUB_URL = "https://www.reddit.com/r"
 IMAGE_OUTPUT_DIR = None
 VIDEO_OUTPUT_DIR = None
 WEBDRIVER_RENDER_TIMEOUT_SECONDS = 5
@@ -33,7 +34,8 @@ def get_args():
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("--username", "-u", required=True, help="User's username")
     arg_parser.add_argument("--password", "-p", required=True, help="User's password")
-    arg_parser.add_argument("--target", "-t", required=True, help="Target profile")
+    arg_parser.add_argument("--target", "-t", required=False, help="Target profile")
+    arg_parser.add_argument("--sub", "-s", required=False, help="Target subreddit")
     arg_parser.add_argument("--output", "-o", required=True, help="Output directory")
     arg_parser.add_argument("--headless", "-hl", action="store_true", help="Headless run")
 
@@ -116,12 +118,15 @@ def get_user_content():
 
 
 def create_output_directories():
+    base_output_dir = args.target if args.target else args.sub
+    base_output_dir = f"{args.output}/{base_output_dir}"
+
     global IMAGE_OUTPUT_DIR
-    IMAGE_OUTPUT_DIR = f"{args.output}/{args.target}/img"
+    IMAGE_OUTPUT_DIR = f"{base_output_dir}/img"
     os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 
     global VIDEO_OUTPUT_DIR
-    VIDEO_OUTPUT_DIR = f"{args.output}/{args.target}/video"
+    VIDEO_OUTPUT_DIR = f"{base_output_dir}/video"
     os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True)
 
 
@@ -133,8 +138,9 @@ def download_redgifs():
         soup = BeautifulSoup(requests.get(link).content, "html.parser")
         redgif_src = soup.find("meta", {"property": "og:video"}).attrs["content"]
         title = soup.find("title").text
+        user = title.split("by ")[1].split(" |")[0]
 
-        if save_file(redgif_src, title, VIDEO_OUTPUT_DIR):
+        if save_file(link=redgif_src, title=title, path=VIDEO_OUTPUT_DIR, user=user):
             counter += 1
 
     logging.info(f"{counter} Redgifs files saved")
@@ -168,8 +174,9 @@ def download_complex_posts(composite_posts):
                 expand_button_probe[0].click()
                 time.sleep(TIME_SLEEP_SECONDS)
                 post_image_elements = post.find_elements(By.CSS_SELECTOR, "img[src]:not([alt='']):not([src=''])")
+                author = post.find_element(By.CSS_SELECTOR, "a[data-testid='post_author_link']").text.replace("u/", "")
 
-                count += [download_image_element(image_element=i) for i in post_image_elements].count(True)
+                count += [download_image_element(image_element=i, user=author) for i in post_image_elements].count(True)
 
     logging.info(f"{count} files saved")
 
@@ -189,21 +196,21 @@ def is_duplicate(image_content):
     return is_duplicated
 
 
-def download_image_element(image_element, file_content=None, image_src=None, image_title=None):
+def download_image_element(image_element, user, file_content=None, image_src=None, image_title=None):
     if not image_title:
-        image_title = sanitize_string(image_element.get_attribute("alt"))
+        image_title = image_element.get_attribute("alt")
 
     if not image_src:
         image_src = image_element.get_attribute("src")
 
-    return save_file(content=file_content, link=image_src, title=image_title, path=IMAGE_OUTPUT_DIR)
+    return save_file(content=file_content, link=image_src, title=image_title, path=IMAGE_OUTPUT_DIR, user=user)
 
 
-def save_file(link, title, path, content=None):
+def save_file(link, user, title, path, content=None):
     name_parts = urlparse(link).path.split(".")
     name_identifier = name_parts[0].split("/")[-1]
     extension = name_parts[-1]
-    local_path = f"{path}/{args.target}__{name_identifier}__{title[:30]}.{extension}"
+    local_path = f"{path}/{user}__{name_identifier}__{sanitize_string(title[:30])}.{extension}"
     content: bytes
 
     if os.path.exists(local_path):
@@ -230,18 +237,35 @@ def download_simple_image_posts(elements_grid):
     easy_images = []
 
     for element in elements_grid:
-        href = element.find_element(By.TAG_NAME, "a").get_attribute("href")
+        href_probe = element.find_elements(By.TAG_NAME, "a")
 
-        if file_is_image(href.split("/")[-1]):
+        if len(href_probe) > 0 and file_is_image(href_probe[0].get_attribute("href").split("/")[-1]):
             # TODO: scroll if title is null
             image_title = element.find_element(By.TAG_NAME, "h3").text
-            download_image_element(image_element=element.find_element(By.TAG_NAME, "img"), image_src=href,
-                                   image_title=image_title)
+            author = element.find_element(By.CSS_SELECTOR, "a[data-testid='post_author_link']").text.replace("u/", "")
+            download_image_element(image_element=element.find_element(By.TAG_NAME, "img"),
+                                   image_src=href_probe[0].get_attribute("href"),
+                                   image_title=image_title, user=author)
             easy_images.append(element)
 
     logging.info(f"{len(easy_images)} files saved")
 
     return easy_images
+
+
+def get_subreddit_content():
+    driver.get(f"{REDDIT_SUB_URL}/{args.sub}/")
+    elements_grid = driver.find_elements(By.XPATH,
+                                         "//*[@id='AppRouter-main-content']/div/div/div[2]/div[4]/div[1]/div[5]/div")
+
+    create_output_directories()
+    easy_images = download_simple_image_posts(elements_grid)
+
+    # page_scroll_up()
+    # time.sleep(TIME_SLEEP_SECONDS)
+    # download_complex_posts([e for e in elements_grid if e not in easy_images])
+    #
+    # download_redgifs()
 
 
 def main():
@@ -257,7 +281,14 @@ def main():
     login()
     logging.info("Logged in")
 
-    get_user_content()
+    if args.target:
+        get_user_content()
+
+    elif args.sub:
+        get_subreddit_content()
+
+    else:
+        logging.error("Either a target user or subreddit is required")
 
     logging.info("Done")
 
