@@ -174,7 +174,7 @@ def get_redgifs_link(post):
         return None
 
 
-def toggle_complex_post_details(post, expand_button):
+def toggle_complex_post_details(expand_button):
     successful = False
 
     while not successful:
@@ -204,12 +204,12 @@ def download_complex_posts(composite_posts):
 
             if len(expand_button_probe) > 0:
                 logging.info("Inspecting complex post details")
-                toggle_complex_post_details(post, expand_button_probe[0])
+                toggle_complex_post_details(expand_button_probe[0])
                 post_image_elements = post.find_elements(By.CSS_SELECTOR, "img[src]:not([alt='']):not([src=''])")
                 author = get_post_author(post)
 
                 count += [download_image_element(image_element=i, user=author) for i in post_image_elements].count(True)
-                toggle_complex_post_details(post, expand_button_probe[0])
+                toggle_complex_post_details(expand_button_probe[0])
 
     logging.info(f"{count} files saved")
 
