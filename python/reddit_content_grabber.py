@@ -41,6 +41,8 @@ def get_args():
     arg_parser.add_argument("--sub", "-s", required=False, help="Target subreddit")
     arg_parser.add_argument("--output", "-o", required=True, help="Output directory")
     arg_parser.add_argument("--headless", "-hl", action="store_true", help="Headless run")
+    arg_parser.add_argument("--only-videos", "-v", action="store_true", help="Download only videos")
+    arg_parser.add_argument("--max-files", "-m", required=False, help="Maximum number of files to download")
 
     return arg_parser.parse_args()
 
@@ -63,7 +65,12 @@ def login():
 
 def file_is_downloadable(name):
     name = name.split("?")[0]
-    return name.endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif'))
+
+    if args.only_videos:
+        return name.endswith('.gif')
+
+    else:
+        return name.endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif'))
 
 
 def file_is_type(name, extension):
@@ -112,23 +119,16 @@ def full_page_scroll_down():
 
 def get_user_content():
     driver.get(f"{REDDIT_PROFILE_URL}/{args.target}/submitted")
-    full_page_scroll_down()
-    elements_grid = driver.find_elements(By.XPATH,
-                                         "//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/div")
-
-    logging.info(f"{len(elements_grid)} posts detected for target user {args.target}")
-
     create_output_directories()
+    inspected_elements = []
+    grid_elements_xpath = "//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/div"
+    grid_elements = driver.find_elements(By.XPATH, grid_elements_xpath)
 
-    page_scroll(Keys.HOME)
-    time.sleep(TIME_SLEEP_SECONDS)
-    easy_images = download_from_simple_posts(elements_grid)
-
-    page_scroll(Keys.HOME)
-    time.sleep(TIME_SLEEP_SECONDS)
-    download_complex_posts([e for e in elements_grid if e not in easy_images])
-
-    download_redgifs()
+    while len(inspected_elements) != len(grid_elements):
+        elements_to_inspect = [e for e in grid_elements if e not in inspected_elements]
+        download_from_simple_posts(elements_to_inspect)
+        inspected_elements.extend(elements_to_inspect)
+        grid_elements = driver.find_elements(By.XPATH, grid_elements_xpath)
 
 
 def create_output_directories():
@@ -216,6 +216,10 @@ def toggle_complex_post_details(expand_button):
             time.sleep(TIME_SLEEP_SECONDS)
 
 
+def centralize_at_element(element):
+    driver.execute_script("arguments[0].scrollIntoView(true);", element)
+
+
 def download_complex_posts(composite_posts):
     logging.info("Downloading content from complex posts 🧠")
     count = 0
@@ -234,8 +238,8 @@ def download_complex_posts(composite_posts):
                 logging.info("Inspecting complex post details")
                 toggle_complex_post_details(expand_button_probe[0])
 
-                driver.execute_script("arguments[0].scrollIntoView(true);", expand_button_probe[0])
-                page_scroll(Keys.UP)
+                # centralize_at_element(expand_button_probe[0])
+                # page_scroll(Keys.UP)
                 time.sleep(2)
 
                 post_image_elements = post.find_elements(By.CSS_SELECTOR, "img[src]:not([alt='']):not([src=''])")
@@ -287,7 +291,8 @@ def download_image_element(image_element, user, file_content=None, image_src=Non
     if not image_src:
         image_src = image_element.get_attribute("src")
 
-    return save_file(content=file_content, link=image_src, title=image_title, user=user)
+    return (file_is_downloadable(image_src.split("/")[-1]) and
+            save_file(content=file_content, link=image_src, title=image_title, user=user))
 
 
 def save_file(link, user, title, content=None):
@@ -313,14 +318,15 @@ def save_file(link, user, title, content=None):
         if not content:
             content = safe_request_content(link)
 
-        if is_duplicate(content):
-            logging.info(f"Skipping duplicate file {name_identifier}")
+        if content:
+            if is_duplicate(content):
+                logging.info(f"Skipping duplicate file {name_identifier}")
 
-        else:
-            with open(local_path, "wb") as image_file:
-                image_file.write(content)
-                logging.info(f"File {local_path.split('/')[-1]} downloaded")
-                return True
+            else:
+                with open(local_path, "wb") as image_file:
+                    image_file.write(content)
+                    logging.info(f"File {local_path.split('/')[-1]} downloaded")
+                    return True
 
     return False
 
@@ -331,6 +337,7 @@ def download_from_simple_posts(elements_grid):
     counter = 0
 
     for element in elements_grid:
+        centralize_at_element(element)
         href_probe = element.find_elements(By.TAG_NAME, "a")
         image_title_probe = element.find_elements(By.TAG_NAME, "h3")
         author = get_post_author(element)
@@ -372,12 +379,15 @@ def get_subreddit_content():
     posts_xpath = "//*[@id='AppRouter-main-content']/div/div/div[2]/div[4]/div[1]/div[5]/div"
     elements_grid = driver.find_elements(By.XPATH, posts_xpath)
     downloaded_elements = []
-
     create_output_directories()
+    max_files = -1
 
-    while True:
+    if args.max_files:
+        max_files = int(args.max_files)
+
+    while max_files < 0 or len(downloaded_elements) <= max_files:
         download_from_simple_posts(elements_grid)
-        full_page_scroll_down()
+        # full_page_scroll_down()
         downloaded_elements.extend(elements_grid)
         elements_grid = [e for e in driver.find_elements(By.XPATH, posts_xpath) if e not in downloaded_elements]
 
