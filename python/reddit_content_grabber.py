@@ -90,12 +90,6 @@ def file_is_image(extension):
     return extension.lower() in ['png', 'jpg', 'jpeg', 'tiff', 'bmp', 'gif', "pjpg"]
 
 
-# def get_grid_size():
-#     grid = driver.find_elements(By.XPATH,
-#                                 "//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/div")
-#     return len(grid)
-
-
 def page_scroll(key):
     page_body = driver.find_element(By.TAG_NAME, "body")
     page_body.send_keys(key)
@@ -103,44 +97,26 @@ def page_scroll(key):
     logging.info(f"Page scrolled {direction}")
 
 
-# def full_page_scroll_down():
-#     grid_size = get_grid_size()
-#     page_body = driver.find_element(By.TAG_NAME, "body")
-#     page_body.send_keys(Keys.END)
-#     wait_until_visible((By.XPATH,
-#                         f"//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/"
-#                         f"div[{grid_size + 1}]"))
-#
-#     counter = 1
-#
-#     while get_grid_size() != grid_size:
-#         logging.info(f"Page scrolled ({counter})")
-#         counter += 1
-#         grid_size = get_grid_size()
-#         page_body.send_keys(Keys.END)
-#         wait_until_visible((By.XPATH,
-#                             f"//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/"
-#                             f"div[{grid_size + 1}]"))
-#
-#     logging.info("Page finished scrolling")
-
-
 def store_user_content_urls():
-    logging.info("Storing user content urls")
-    driver.get(f"{REDDIT_PROFILE_URL}/{args.target}/submitted")
-    create_output_directories()
-    inspected_elements = []
-    grid_elements_xpath = "//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/div"
-    grid_elements = driver.find_elements(By.XPATH, grid_elements_xpath)
+    user_posts_xpath = "//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/div"
+    store_content_urls(f"{REDDIT_PROFILE_URL}/{args.target}/submitted", user_posts_xpath)
 
-    while len(inspected_elements) != len(grid_elements):
+
+def store_content_urls(page_url, grid_elements_xpath, max_posts_to_inspect=None):
+    logging.info("Storing content urls")
+    driver.get(page_url)
+    grid_elements = driver.find_elements(By.XPATH, grid_elements_xpath)
+    inspected_elements = []
+
+    while (len(inspected_elements) != len(grid_elements) and
+           (not max_posts_to_inspect or len(inspected_elements) < max_posts_to_inspect)):
         elements_to_inspect = [e for e in grid_elements if e not in inspected_elements]
         inspect_posts_for_content(elements_to_inspect)
         inspected_elements.extend(elements_to_inspect)
         grid_elements = driver.find_elements(By.XPATH, grid_elements_xpath)
 
 
-def create_output_directories():
+def setup_output_directories():
     logging.info("Setting up directories")
     base_output_dir = args.target if args.target else args.sub
     base_output_dir = f"{args.output}/{base_output_dir}"
@@ -184,7 +160,7 @@ def store_link_from_inspectable_file(link, title=None, user=None):
     if not user and len(title_parts) > 1:
         user = title_parts[1].split(" |")[0]
 
-    return store_content_link(link=src.attrs["content"], title=title, user=user)
+    return store_link(link=src.attrs["content"], title=title, user=user)
 
 
 # def download_redgifs():
@@ -288,8 +264,8 @@ def download_image_element(image_element, user, image_src=None, image_title=None
     if not image_src:
         image_src = image_element.get_attribute("src")
 
-    return (file_is_downloadable(image_src.split("/")[-1]) and store_content_link(link=image_src, title=image_title,
-                                                                                  user=user))
+    return (file_is_downloadable(image_src.split("/")[-1]) and store_link(link=image_src, title=image_title,
+                                                                          user=user))
 
 
 def save_files(content_map):
@@ -319,7 +295,7 @@ def save_file(local_path, url):
     return is_successful
 
 
-def store_content_link(link, user, title):
+def store_link(link, user, title):
     parsed_link = urlparse(link)
     name_parts = parsed_link.path.split(".")
     name_identifier = name_parts[0].split("/")[-1]
@@ -382,28 +358,14 @@ def inspect_posts_for_content(elements_grid):
     return easy_posts
 
 
-def get_subreddit_content():
-    driver.get(f"{REDDIT_SUB_URL}/{args.sub}/")
-    posts_xpath = "//*[@id='AppRouter-main-content']/div/div/div[2]/div[4]/div[1]/div[5]/div"
-    elements_grid = driver.find_elements(By.XPATH, posts_xpath)
-    downloaded_elements = []
-    create_output_directories()
-    max_files = -1
+def store_sub_content_urls():
+    sub_posts_xpath = "//*[@id='AppRouter-main-content']/div/div/div[2]/div[4]/div[1]/div[5]/div"
+    max_files = None
 
     if args.max_files:
         max_files = int(args.max_files)
 
-    while max_files < 0 or len(downloaded_elements) <= max_files:
-        inspect_posts_for_content(elements_grid)
-        # full_page_scroll_down()
-        downloaded_elements.extend(elements_grid)
-        elements_grid = [e for e in driver.find_elements(By.XPATH, posts_xpath) if e not in downloaded_elements]
-
-    # page_scroll_up()
-    # time.sleep(TIME_SLEEP_SECONDS)
-    # download_complex_posts([e for e in elements_grid if e not in easy_images])
-    #
-    # download_redgifs()
+    store_content_urls(f"{REDDIT_SUB_URL}/{args.sub}/", sub_posts_xpath, max_files)
 
 
 def download_content():
@@ -436,12 +398,13 @@ def main():
 
     webdriver_setup()
     login()
+    setup_output_directories()
 
     if args.target:
         store_user_content_urls()
 
     elif args.sub:
-        get_subreddit_content()
+        store_sub_content_urls()
 
     else:
         logging.error("Either a target user or subreddit is required")
