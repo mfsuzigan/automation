@@ -3,6 +3,8 @@ import time
 from urllib.parse import urlparse
 from urllib.parse import parse_qs
 from argparse import Namespace
+
+from requests import RequestException
 from selenium.webdriver import Chrome
 import hashlib
 import os
@@ -12,7 +14,7 @@ import logging
 
 from bs4 import BeautifulSoup
 from selenium import webdriver
-from selenium.common import TimeoutException, NoSuchElementException
+from selenium.common import TimeoutException, NoSuchElementException, ElementNotInteractableException
 from selenium.webdriver import Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
@@ -74,10 +76,11 @@ def get_grid_size():
     return len(grid)
 
 
-def page_scroll_up():
+def page_scroll(key):
     page_body = driver.find_element(By.TAG_NAME, "body")
-    page_body.send_keys(Keys.HOME)
-    logging.info("Page scrolled up")
+    page_body.send_keys(key)
+    direction = "down" if key == Keys.PAGE_DOWN else "up"
+    logging.info(f"Page scrolled {direction}")
 
 
 def full_page_scroll_down():
@@ -112,11 +115,11 @@ def get_user_content():
 
     create_output_directories()
 
-    page_scroll_up()
+    page_scroll(Keys.HOME)
     time.sleep(TIME_SLEEP_SECONDS)
-    easy_images = download_simple_image_posts(elements_grid)
+    easy_images = download_from_simple_posts(elements_grid)
 
-    page_scroll_up()
+    page_scroll(Keys.HOME)
     time.sleep(TIME_SLEEP_SECONDS)
     download_complex_posts([e for e in elements_grid if e not in easy_images])
 
@@ -136,12 +139,21 @@ def create_output_directories():
     os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True)
 
 
+def safe_request_content(url):
+    try:
+        return requests.get(url).content
+
+    except RequestException:
+        logging.error(f"Error downloading {url}")
+        return ""
+
+
 def download_redgifs():
     logging.info("Downloading Redgifs content 🔴")
     counter = 0
 
     for link in redgif_links:
-        soup = BeautifulSoup(requests.get(link).content, "html.parser")
+        soup = BeautifulSoup(safe_request_content(link), "html.parser")
         redgif_src = soup.find("meta", {"property": "og:video"}).attrs["content"]
         title = soup.find("title").text
         user = title.split("by ")[1].split(" |")[0]
@@ -162,6 +174,20 @@ def get_redgifs_link(post):
         return None
 
 
+def toggle_complex_post_details(post, expand_button):
+    successful = False
+
+    while not successful:
+        try:
+            expand_button.click()
+            successful = True
+
+        except ElementNotInteractableException:
+            logging.warning("Error expanding complex post details, retrying...")
+            page_scroll(Keys.PAGE_DOWN)
+            time.sleep(TIME_SLEEP_SECONDS)
+
+
 def download_complex_posts(composite_posts):
     logging.info("Downloading content from complex posts 🧠")
     count = 0
@@ -177,12 +203,13 @@ def download_complex_posts(composite_posts):
                                                      "div[data-click-id='body'] button[aria-label='Expand content']")
 
             if len(expand_button_probe) > 0:
-                expand_button_probe[0].click()
-                time.sleep(TIME_SLEEP_SECONDS)
+                logging.info("Inspecting complex post details")
+                toggle_complex_post_details(post, expand_button_probe[0])
                 post_image_elements = post.find_elements(By.CSS_SELECTOR, "img[src]:not([alt='']):not([src=''])")
                 author = get_post_author(post)
 
                 count += [download_image_element(image_element=i, user=author) for i in post_image_elements].count(True)
+                toggle_complex_post_details(post, expand_button_probe[0])
 
     logging.info(f"{count} files saved")
 
@@ -241,7 +268,7 @@ def save_file(link, user, title, content=None):
 
     else:
         if not content:
-            content = requests.get(link).content
+            content = safe_request_content(link)
 
         if is_duplicate(content):
             logging.info(f"Skipping duplicate file {name_identifier}")
@@ -255,9 +282,10 @@ def save_file(link, user, title, content=None):
     return False
 
 
-def download_simple_image_posts(elements_grid):
-    logging.info("Downloading images from simple posts 📸")
-    easy_images = []
+def download_from_simple_posts(elements_grid):
+    logging.info("Downloading content from simple posts 📸")
+    easy_posts = []
+    counter = 0
 
     for element in elements_grid:
         href_probe = element.find_elements(By.TAG_NAME, "a")
@@ -266,17 +294,20 @@ def download_simple_image_posts(elements_grid):
             # TODO: scroll if title is null
             image_title = element.find_element(By.TAG_NAME, "h3").text
             author = get_post_author(element)
-            download_image_element(image_element=element.find_element(By.TAG_NAME, "img"),
-                                   image_src=href_probe[0].get_attribute("href"),
-                                   image_title=image_title, user=author)
-            easy_images.append(element)
+
+            if download_image_element(image_element=element.find_element(By.TAG_NAME, "img"),
+                                      image_src=href_probe[0].get_attribute("href"),
+                                      image_title=image_title, user=author):
+                counter += 1
+
+            easy_posts.append(element)
 
         else:
             pass
 
-    logging.info(f"{len(easy_images)} files saved")
+    logging.info(f"{counter} files saved")
 
-    return easy_images
+    return easy_posts
 
 
 def get_subreddit_content():
@@ -288,9 +319,9 @@ def get_subreddit_content():
     create_output_directories()
 
     while True:
-        download_simple_image_posts(elements_grid)
+        download_from_simple_posts(elements_grid)
         full_page_scroll_down()
-        time.sleep(TIME_SLEEP_SECONDS)
+        # time.sleep(TIME_SLEEP_SECONDS)
         downloaded_elements.extend(elements_grid)
         elements_grid = [e for e in driver.find_elements(By.XPATH, posts_xpath) if e not in downloaded_elements]
 
