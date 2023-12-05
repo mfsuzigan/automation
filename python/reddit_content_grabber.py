@@ -155,13 +155,20 @@ def safe_request_content(url):
 
 def download_from_inspectable_file(link, title=None, user=None):
     soup = BeautifulSoup(safe_request_content(link), "html.parser")
-    src = soup.find("meta", {"property": "og:video"})
+    src = None
+
+    for type_ in ["og:video", "og:image:url"]:
+        if soup.find("meta", {"property": type_}):
+            src = soup.find("meta", {"property": type_})
 
     if not src:
-        src = soup.find("meta", {"property": "og:image:url"})
+        return False
 
-    if not title:
+    if not title and soup.find("title"):
         title = soup.find("title").text
+
+    else:
+        title = "UNTITLED by UNKNOWN"
 
     if not user:
         user = title.split("by ")[1].split(" |")[0]
@@ -349,10 +356,11 @@ def download_from_simple_posts(elements_grid):
 
             if success:
                 counter += 1
-                easy_posts.append(element)
 
         else:
             download_complex_posts([element])
+
+        easy_posts.append(element)
 
     logging.info(f"{counter} files saved")
 
@@ -370,7 +378,6 @@ def get_subreddit_content():
     while True:
         download_from_simple_posts(elements_grid)
         full_page_scroll_down()
-        # time.sleep(TIME_SLEEP_SECONDS)
         downloaded_elements.extend(elements_grid)
         elements_grid = [e for e in driver.find_elements(By.XPATH, posts_xpath) if e not in downloaded_elements]
 
