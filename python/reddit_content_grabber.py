@@ -1,4 +1,5 @@
 import argparse
+import threading
 import time
 from urllib.parse import urlparse
 from urllib.parse import parse_qs
@@ -26,14 +27,19 @@ REDDIT_SUB_URL = "https://www.reddit.com/r"
 IMAGE_OUTPUT_DIR = None
 VIDEO_OUTPUT_DIR = None
 WEBDRIVER_RENDER_TIMEOUT_SECONDS = 5
-TIME_SLEEP_SECONDS = 5
+DETAIL_EXPANSION_RETRY_SECONDS = 5
+THREADS_TO_USE = 8
+
 args: Namespace
 driver: Chrome
 hashes = []
 redgif_links = set()
+master_content_map = {}
+files_saved_counter = 0
 
 
 def get_args():
+    logging.info("Reading args")
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("--username", "-u", required=True, help="User's username")
     arg_parser.add_argument("--password", "-p", required=True, help="User's password")
@@ -56,11 +62,13 @@ def wait_until_visible(locator):
 
 
 def login():
+    logging.info("Logging in")
     driver.get(REDDIT_LOGIN_URL)
     driver.find_element(By.ID, "loginUsername").send_keys(args.username)
     driver.find_element(By.ID, "loginPassword").send_keys(args.password)
     driver.find_element(By.TAG_NAME, "button").click()
     wait_until_visible((By.ID, "USER_DROPDOWN_ID"))
+    logging.info("Logged in")
 
 
 def file_is_downloadable(name):
@@ -70,7 +78,7 @@ def file_is_downloadable(name):
         return name.endswith('.gif')
 
     else:
-        return name.endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif'))
+        return name.endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif', '.pjpg'))
 
 
 def file_is_type(name, extension):
@@ -79,13 +87,13 @@ def file_is_type(name, extension):
 
 
 def file_is_image(extension):
-    return extension.lower() in ['png', 'jpg', 'jpeg', 'tiff', 'bmp', 'gif']
+    return extension.lower() in ['png', 'jpg', 'jpeg', 'tiff', 'bmp', 'gif', "pjpg"]
 
 
-def get_grid_size():
-    grid = driver.find_elements(By.XPATH,
-                                "//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/div")
-    return len(grid)
+# def get_grid_size():
+#     grid = driver.find_elements(By.XPATH,
+#                                 "//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/div")
+#     return len(grid)
 
 
 def page_scroll(key):
@@ -95,29 +103,30 @@ def page_scroll(key):
     logging.info(f"Page scrolled {direction}")
 
 
-def full_page_scroll_down():
-    grid_size = get_grid_size()
-    page_body = driver.find_element(By.TAG_NAME, "body")
-    page_body.send_keys(Keys.END)
-    wait_until_visible((By.XPATH,
-                        f"//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/"
-                        f"div[{grid_size + 1}]"))
+# def full_page_scroll_down():
+#     grid_size = get_grid_size()
+#     page_body = driver.find_element(By.TAG_NAME, "body")
+#     page_body.send_keys(Keys.END)
+#     wait_until_visible((By.XPATH,
+#                         f"//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/"
+#                         f"div[{grid_size + 1}]"))
+#
+#     counter = 1
+#
+#     while get_grid_size() != grid_size:
+#         logging.info(f"Page scrolled ({counter})")
+#         counter += 1
+#         grid_size = get_grid_size()
+#         page_body.send_keys(Keys.END)
+#         wait_until_visible((By.XPATH,
+#                             f"//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/"
+#                             f"div[{grid_size + 1}]"))
+#
+#     logging.info("Page finished scrolling")
 
-    counter = 1
 
-    while get_grid_size() != grid_size:
-        logging.info(f"Page scrolled ({counter})")
-        counter += 1
-        grid_size = get_grid_size()
-        page_body.send_keys(Keys.END)
-        wait_until_visible((By.XPATH,
-                            f"//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/"
-                            f"div[{grid_size + 1}]"))
-
-    logging.info("Page finished scrolling")
-
-
-def get_user_content():
+def store_user_content_urls():
+    logging.info("Storing user content urls")
     driver.get(f"{REDDIT_PROFILE_URL}/{args.target}/submitted")
     create_output_directories()
     inspected_elements = []
@@ -126,12 +135,13 @@ def get_user_content():
 
     while len(inspected_elements) != len(grid_elements):
         elements_to_inspect = [e for e in grid_elements if e not in inspected_elements]
-        download_from_simple_posts(elements_to_inspect)
+        inspect_posts_for_content(elements_to_inspect)
         inspected_elements.extend(elements_to_inspect)
         grid_elements = driver.find_elements(By.XPATH, grid_elements_xpath)
 
 
 def create_output_directories():
+    logging.info("Setting up directories")
     base_output_dir = args.target if args.target else args.sub
     base_output_dir = f"{args.output}/{base_output_dir}"
 
@@ -144,7 +154,7 @@ def create_output_directories():
     os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True)
 
 
-def safe_request_content(url):
+def safely_request_content(url):
     try:
         return requests.get(url).content
 
@@ -153,9 +163,11 @@ def safe_request_content(url):
         return ""
 
 
-def download_from_inspectable_file(link, title=None, user=None):
-    soup = BeautifulSoup(safe_request_content(link), "html.parser")
+def store_link_from_inspectable_file(link, title=None, user=None):
+    soup = BeautifulSoup(safely_request_content(link), "html.parser")
     src = None
+    title = "UNKNOWN_TITLE"
+    user = "UNKNOWN_USER"
 
     for type_ in ["og:video", "og:image:url"]:
         if soup.find("meta", {"property": type_}):
@@ -167,29 +179,28 @@ def download_from_inspectable_file(link, title=None, user=None):
     if not title and soup.find("title"):
         title = soup.find("title").text
 
-    else:
-        title = "UNTITLED by UNKNOWN"
+    title_parts = title.split("by ")
 
-    if not user:
-        user = title.split("by ")[1].split(" |")[0]
+    if not user and len(title_parts) > 1:
+        user = title_parts[1].split(" |")[0]
 
-    return save_file(link=src.attrs["content"], title=title, user=user)
+    return store_content_link(link=src.attrs["content"], title=title, user=user)
 
 
-def download_redgifs():
-    logging.info("Downloading Redgifs content 🔴")
-    counter = 0
-
-    for link in redgif_links:
-        soup = BeautifulSoup(safe_request_content(link), "html.parser")
-        redgif_src = soup.find("meta", {"property": "og:video"}).attrs["content"]
-        title = soup.find("title").text
-        user = title.split("by ")[1].split(" |")[0]
-
-        if save_file(link=redgif_src, title=title, user=user):
-            counter += 1
-
-    logging.info(f"{counter} Redgifs files saved")
+# def download_redgifs():
+#     logging.info("Downloading Redgifs content 🔴")
+#     counter = 0
+#
+#     for link in redgif_links:
+#         soup = BeautifulSoup(safely_request_content(link), "html.parser")
+#         redgif_src = soup.find("meta", {"property": "og:video"}).attrs["content"]
+#         title = soup.find("title").text
+#         user = title.split("by ")[1].split(" |")[0]
+#
+#         if store_content_link(link=redgif_src, title=title, user=user):
+#             counter += 1
+#
+#     logging.info(f"{counter} Redgifs files saved")
 
 
 def get_redgifs_link(post):
@@ -213,52 +224,38 @@ def toggle_complex_post_details(expand_button):
         except (ElementClickInterceptedException, ElementNotInteractableException):
             logging.warning("Error expanding complex post details, retrying...")
             page_scroll(Keys.PAGE_UP)
-            time.sleep(TIME_SLEEP_SECONDS)
+            time.sleep(DETAIL_EXPANSION_RETRY_SECONDS)
 
 
 def centralize_at_element(element):
     driver.execute_script("arguments[0].scrollIntoView(true);", element)
 
 
-def download_complex_posts(composite_posts):
-    logging.info("Downloading content from complex posts 🧠")
-    count = 0
-
+def expand_posts_for_details(composite_posts):
     for post in composite_posts:
-        redgif_link = get_redgifs_link(post)
+        expand_button_probe = post.find_elements(By.CSS_SELECTOR,
+                                                 "div[data-click-id='body'] button[aria-label='Expand content']")
 
-        if redgif_link:
-            redgif_links.add(redgif_link)
+        if len(expand_button_probe) > 0:
+            logging.info("Expanding post for details")
+            toggle_complex_post_details(expand_button_probe[0])
+            time.sleep(2)
 
-        else:
-            expand_button_probe = post.find_elements(By.CSS_SELECTOR,
-                                                     "div[data-click-id='body'] button[aria-label='Expand content']")
+            post_image_elements = post.find_elements(By.CSS_SELECTOR, "img[src]:not([alt='']):not([src=''])")
 
-            if len(expand_button_probe) > 0:
-                logging.info("Inspecting complex post details")
-                toggle_complex_post_details(expand_button_probe[0])
+            if len(post_image_elements) >= 5:
+                next_button_probe = post.find_elements(By.CSS_SELECTOR, "a[title='Next']")
 
-                # centralize_at_element(expand_button_probe[0])
-                # page_scroll(Keys.UP)
-                time.sleep(2)
+                while len(next_button_probe) > 0:
+                    next_button_probe[0].click()
+                    next_button_probe = post.find_elements(By.CSS_SELECTOR, "a[title='Next']")
 
                 post_image_elements = post.find_elements(By.CSS_SELECTOR, "img[src]:not([alt='']):not([src=''])")
 
-                if len(post_image_elements) >= 5:
-                    next_button_probe = post.find_elements(By.CSS_SELECTOR, "a[title='Next']")
+            author = get_post_author(post)
 
-                    while len(next_button_probe) > 0:
-                        next_button_probe[0].click()
-                        next_button_probe = post.find_elements(By.CSS_SELECTOR, "a[title='Next']")
-
-                    post_image_elements = post.find_elements(By.CSS_SELECTOR, "img[src]:not([alt='']):not([src=''])")
-
-                author = get_post_author(post)
-
-                count += [download_image_element(image_element=i, user=author) for i in post_image_elements].count(True)
-                toggle_complex_post_details(expand_button_probe[0])
-
-    logging.info(f"{count} files saved")
+            [download_image_element(image_element=i, user=author) for i in post_image_elements]
+            toggle_complex_post_details(expand_button_probe[0])
 
 
 def get_post_author(post):
@@ -284,18 +281,45 @@ def is_duplicate(image_content):
     return is_duplicated
 
 
-def download_image_element(image_element, user, file_content=None, image_src=None, image_title=None):
+def download_image_element(image_element, user, image_src=None, image_title=None):
     if not image_title:
         image_title = image_element.get_attribute("alt")
 
     if not image_src:
         image_src = image_element.get_attribute("src")
 
-    return (file_is_downloadable(image_src.split("/")[-1]) and
-            save_file(content=file_content, link=image_src, title=image_title, user=user))
+    return (file_is_downloadable(image_src.split("/")[-1]) and store_content_link(link=image_src, title=image_title,
+                                                                                  user=user))
 
 
-def save_file(link, user, title, content=None):
+def save_files(content_map):
+    for (path, url) in content_map.items():
+        save_file(path, url)
+
+
+def save_file(local_path, url):
+    content = safely_request_content(url)
+    is_successful = False
+    thread_id = threading.currentThread().ident
+
+    if content:
+        if is_duplicate(content):
+            logging.info(f"T-{thread_id}: Skipping duplicate file by content: {local_path}")
+
+        else:
+            try:
+                with open(local_path, "wb") as file:
+                    logging.info(f"T-{thread_id}: Downloading file: {local_path.split('/')[-1]}")
+                    file.write(content)
+                    is_successful = True
+
+            except OSError as e:
+                logging.error(f"T-{thread_id}: Error writing file: {local_path}", e)
+
+    return is_successful
+
+
+def store_content_link(link, user, title):
     parsed_link = urlparse(link)
     name_parts = parsed_link.path.split(".")
     name_identifier = name_parts[0].split("/")[-1]
@@ -310,66 +334,50 @@ def save_file(link, user, title, content=None):
     path = IMAGE_OUTPUT_DIR if file_is_image(extension) else VIDEO_OUTPUT_DIR
     local_path = f"{path}/{user}__{name_identifier}__{sanitize_string(title[:30])}.{extension}"
     content: bytes
+    is_successful = False
 
     if os.path.exists(local_path):
         logging.info(f"Skipping existing file {local_path}")
 
     else:
-        if not content:
-            content = safe_request_content(link)
+        master_content_map[local_path] = link
+        is_successful = True
 
-        if content:
-            if is_duplicate(content):
-                logging.info(f"Skipping duplicate file {name_identifier}")
-
-            else:
-                with open(local_path, "wb") as image_file:
-                    image_file.write(content)
-                    logging.info(f"File {local_path.split('/')[-1]} downloaded")
-                    return True
-
-    return False
+    return is_successful
 
 
-def download_from_simple_posts(elements_grid):
-    logging.info("Downloading content from simple posts 📸")
+def inspect_posts_for_content(elements_grid):
     easy_posts = []
-    counter = 0
 
     for element in elements_grid:
         centralize_at_element(element)
         href_probe = element.find_elements(By.TAG_NAME, "a")
-        image_title_probe = element.find_elements(By.TAG_NAME, "h3")
+        post_title_probe = element.find_elements(By.TAG_NAME, "h3")
         author = get_post_author(element)
 
-        if len(href_probe) > 0 and len(image_title_probe) > 0:
+        if len(href_probe) > 0 and len(post_title_probe) > 0:
             src = href_probe[0].get_attribute("href")
-            image_title = image_title_probe[0].text
-            success = False
+            post_title = post_title_probe[0].text
+            logging.info(f"Inspecting post: {post_title}")
 
             if file_is_type(src, "gifv"):
-                success = download_from_inspectable_file(src, image_title, author)
+                store_link_from_inspectable_file(src, post_title, author)
 
             elif len(element.find_elements(By.CSS_SELECTOR, "a[href*=redgifs]")) > 0:
-                success = download_from_inspectable_file(src)
+                store_link_from_inspectable_file(src)
 
             elif file_is_downloadable(src.split("/")[-1]):
-                success = download_image_element(image_element=element.find_element(By.TAG_NAME, "img"),
-                                                 image_src=src,
-                                                 image_title=image_title, user=author)
+                download_image_element(image_element=element.find_element(By.TAG_NAME, "img"),
+                                       image_src=src,
+                                       image_title=post_title, user=author)
 
             else:
-                download_complex_posts([element])
-
-            if success:
-                counter += 1
+                expand_posts_for_details([element])
 
         else:
-            download_complex_posts([element])
+            expand_posts_for_details([element])
 
         easy_posts.append(element)
-
-    logging.info(f"{counter} files saved")
 
     return easy_posts
 
@@ -386,7 +394,7 @@ def get_subreddit_content():
         max_files = int(args.max_files)
 
     while max_files < 0 or len(downloaded_elements) <= max_files:
-        download_from_simple_posts(elements_grid)
+        inspect_posts_for_content(elements_grid)
         # full_page_scroll_down()
         downloaded_elements.extend(elements_grid)
         elements_grid = [e for e in driver.find_elements(By.XPATH, posts_xpath) if e not in downloaded_elements]
@@ -398,6 +406,27 @@ def get_subreddit_content():
     # download_redgifs()
 
 
+def download_content():
+    logging.info("Downloading content")
+    sub_content_map_size = round(len(master_content_map) / THREADS_TO_USE)
+
+    while len(master_content_map) > 0:
+        sub_content_map = {}
+
+        for _ in range(sub_content_map_size):
+
+            if len(master_content_map) > 0:
+                item = master_content_map.popitem()
+                sub_content_map[item[0]] = item[1]
+
+            else:
+                break
+
+        thread = threading.Thread(target=save_files, args=(sub_content_map,))
+        logging.info(f"Starting thread")
+        thread.start()
+
+
 def main():
     logging.getLogger().setLevel(logging.INFO)
     logging.info("Starting")
@@ -406,13 +435,10 @@ def main():
     args = get_args()
 
     webdriver_setup()
-
-    logging.info("Logging in")
     login()
-    logging.info("Logged in")
 
     if args.target:
-        get_user_content()
+        store_user_content_urls()
 
     elif args.sub:
         get_subreddit_content()
@@ -420,10 +446,12 @@ def main():
     else:
         logging.error("Either a target user or subreddit is required")
 
+    download_content()
     logging.info("Done")
 
 
 def webdriver_setup():
+    logging.info("Setting up webdriver")
     options = webdriver.ChromeOptions()
     options.add_argument("--no-sandbox")
     options.add_argument('--disable-dev-shm-usage')
