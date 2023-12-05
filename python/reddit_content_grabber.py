@@ -3,7 +3,6 @@ import time
 from urllib.parse import urlparse
 from urllib.parse import parse_qs
 from argparse import Namespace
-
 from requests import RequestException
 from selenium.webdriver import Chrome
 import hashlib
@@ -14,7 +13,8 @@ import logging
 
 from bs4 import BeautifulSoup
 from selenium import webdriver
-from selenium.common import TimeoutException, NoSuchElementException, ElementNotInteractableException
+from selenium.common import TimeoutException, NoSuchElementException, ElementNotInteractableException, \
+    ElementClickInterceptedException
 from selenium.webdriver import Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
@@ -64,6 +64,11 @@ def login():
 def file_is_downloadable(name):
     name = name.split("?")[0]
     return name.endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif'))
+
+
+def file_is_type(name, extension):
+    name = name.split("?")[0]
+    return name.endswith(extension)
 
 
 def file_is_image(extension):
@@ -148,6 +153,22 @@ def safe_request_content(url):
         return ""
 
 
+def download_from_inspectable_file(link, title=None, user=None):
+    soup = BeautifulSoup(safe_request_content(link), "html.parser")
+    src = soup.find("meta", {"property": "og:video"})
+
+    if not src:
+        src = soup.find("meta", {"property": "og:image:url"})
+
+    if not title:
+        title = soup.find("title").text
+
+    if not user:
+        user = title.split("by ")[1].split(" |")[0]
+
+    return save_file(link=src.attrs["content"], title=title, user=user)
+
+
 def download_redgifs():
     logging.info("Downloading Redgifs content 🔴")
     counter = 0
@@ -182,9 +203,9 @@ def toggle_complex_post_details(expand_button):
             expand_button.click()
             successful = True
 
-        except ElementNotInteractableException:
+        except (ElementClickInterceptedException, ElementNotInteractableException):
             logging.warning("Error expanding complex post details, retrying...")
-            page_scroll(Keys.PAGE_DOWN)
+            page_scroll(Keys.PAGE_UP)
             time.sleep(TIME_SLEEP_SECONDS)
 
 
@@ -205,7 +226,22 @@ def download_complex_posts(composite_posts):
             if len(expand_button_probe) > 0:
                 logging.info("Inspecting complex post details")
                 toggle_complex_post_details(expand_button_probe[0])
+
+                driver.execute_script("arguments[0].scrollIntoView(true);", expand_button_probe[0])
+                page_scroll(Keys.UP)
+                time.sleep(2)
+
                 post_image_elements = post.find_elements(By.CSS_SELECTOR, "img[src]:not([alt='']):not([src=''])")
+
+                if len(post_image_elements) >= 5:
+                    next_button_probe = post.find_elements(By.CSS_SELECTOR, "a[title='Next']")
+
+                    while len(next_button_probe) > 0:
+                        next_button_probe[0].click()
+                        next_button_probe = post.find_elements(By.CSS_SELECTOR, "a[title='Next']")
+
+                    post_image_elements = post.find_elements(By.CSS_SELECTOR, "img[src]:not([alt='']):not([src=''])")
+
                 author = get_post_author(post)
 
                 count += [download_image_element(image_element=i, user=author) for i in post_image_elements].count(True)
@@ -289,21 +325,34 @@ def download_from_simple_posts(elements_grid):
 
     for element in elements_grid:
         href_probe = element.find_elements(By.TAG_NAME, "a")
+        image_title_probe = element.find_elements(By.TAG_NAME, "h3")
+        author = get_post_author(element)
 
-        if len(href_probe) > 0 and file_is_downloadable(href_probe[0].get_attribute("href").split("/")[-1]):
-            # TODO: scroll if title is null
-            image_title = element.find_element(By.TAG_NAME, "h3").text
-            author = get_post_author(element)
+        if len(href_probe) > 0 and len(image_title_probe) > 0:
+            src = href_probe[0].get_attribute("href")
+            image_title = image_title_probe[0].text
+            success = False
 
-            if download_image_element(image_element=element.find_element(By.TAG_NAME, "img"),
-                                      image_src=href_probe[0].get_attribute("href"),
-                                      image_title=image_title, user=author):
+            if file_is_type(src, "gifv"):
+                success = download_from_inspectable_file(src, image_title, author)
+
+            elif len(element.find_elements(By.CSS_SELECTOR, "a[href*=redgifs]")) > 0:
+                success = download_from_inspectable_file(src)
+
+            elif file_is_downloadable(src.split("/")[-1]):
+                success = download_image_element(image_element=element.find_element(By.TAG_NAME, "img"),
+                                                 image_src=src,
+                                                 image_title=image_title, user=author)
+
+            else:
+                download_complex_posts([element])
+
+            if success:
                 counter += 1
-
-            easy_posts.append(element)
+                easy_posts.append(element)
 
         else:
-            pass
+            download_complex_posts([element])
 
     logging.info(f"{counter} files saved")
 
