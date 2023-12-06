@@ -100,13 +100,14 @@ def page_scroll(key):
 
 
 def store_user_content_urls():
+    driver.get(f"{REDDIT_PROFILE_URL}/{args.target}/submitted")
     user_posts_xpath = "//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/div"
-    store_content_urls(f"{REDDIT_PROFILE_URL}/{args.target}/submitted", user_posts_xpath)
+    store_content_urls(user_posts_xpath)
 
 
-def store_content_urls(page_url, grid_elements_xpath, max_posts_to_inspect=None):
+def store_content_urls(grid_elements_xpath, max_posts_to_inspect=None):
     logging.info("Storing content urls")
-    driver.get(page_url)
+
     grid_elements = driver.find_elements(By.XPATH, grid_elements_xpath)
     inspected_elements = []
 
@@ -148,7 +149,7 @@ def safely_request_content(url):
                 successful = True
 
             except RequestException:
-                logging.error(f"Error downloading {url}")
+                logging.warning(f"Error downloading {url}")
 
     return content
 
@@ -357,7 +358,9 @@ def store_sub_content_urls():
     if args.max_files:
         max_files = int(args.max_files)
 
-    store_content_urls(f"{REDDIT_SUB_URL}/{args.sub}/", sub_posts_xpath, max_files)
+    driver.get(f"{REDDIT_SUB_URL}/{args.sub}/")
+    set_classic_view_mode()
+    store_content_urls(sub_posts_xpath, max_files)
 
 
 def download_content():
@@ -379,6 +382,21 @@ def download_content():
         thread = threading.Thread(target=save_files, args=(sub_content_map,))
         logging.info(f"Starting thread")
         thread.start()
+
+
+def set_classic_view_mode():
+    switch_button_probe = driver.find_elements(By.ID, "LayoutSwitch--picker")
+
+    if len(switch_button_probe) > 0:
+        switch_button = switch_button_probe[0]
+        classic_button_probe = switch_button.find_elements(By.CSS_SELECTOR, "i[class*='classic']")
+
+        if len(classic_button_probe) == 0:
+            switch_button.click()
+            classic_button_probe = driver.find_elements(By.CSS_SELECTOR,
+                                                        "div[role='menu'] > button[role='menuitem'] > "
+                                                        "span > i[class*='icon-view_classic']")
+            classic_button_probe[0].click()
 
 
 def main():
