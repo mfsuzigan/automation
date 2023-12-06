@@ -396,7 +396,8 @@ def set_classic_view_mode():
             classic_button_probe = driver.find_elements(By.CSS_SELECTOR,
                                                         "div[role='menu'] > button[role='menuitem'] > "
                                                         "span > i[class*='icon-view_classic']")
-            classic_button_probe[0].click()
+            if len(classic_button_probe) > 0:
+                classic_button_probe[0].click()
 
 
 def main():
