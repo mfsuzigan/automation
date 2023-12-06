@@ -1,4 +1,5 @@
 import argparse
+import math
 import threading
 import time
 from urllib.parse import urlparse
@@ -28,6 +29,7 @@ IMAGE_OUTPUT_DIR = None
 VIDEO_OUTPUT_DIR = None
 WEBDRIVER_RENDER_TIMEOUT_SECONDS = 5
 DETAIL_EXPANSION_RETRY_SECONDS = 5
+MAX_REQUEST_RETRIES = 5
 THREADS_TO_USE = 8
 
 args: Namespace
@@ -113,6 +115,7 @@ def store_content_urls(page_url, grid_elements_xpath, max_posts_to_inspect=None)
         elements_to_inspect = [e for e in grid_elements if e not in inspected_elements]
         inspect_posts_for_content(elements_to_inspect)
         inspected_elements.extend(elements_to_inspect)
+        logging.info(f"{len(inspected_elements)} posts inspected 🛠️️")
         grid_elements = driver.find_elements(By.XPATH, grid_elements_xpath)
 
 
@@ -131,52 +134,44 @@ def setup_output_directories():
 
 
 def safely_request_content(url):
-    try:
-        return requests.get(url).content
+    successful = False
+    content = ""
 
-    except RequestException:
-        logging.error(f"Error downloading {url}")
-        return ""
+    for _ in range(MAX_REQUEST_RETRIES):
+
+        if successful:
+            break
+
+        else:
+            try:
+                content = requests.get(url).content
+                successful = True
+
+            except RequestException:
+                logging.error(f"Error downloading {url}")
+
+    return content
 
 
 def store_link_from_inspectable_file(link, title=None, user=None):
     soup = BeautifulSoup(safely_request_content(link), "html.parser")
-    src = None
-    title = "UNKNOWN_TITLE"
-    user = "UNKNOWN_USER"
+    src = soup.find("meta", {"property": "og:video"})
 
-    for type_ in ["og:video", "og:image:url"]:
-        if soup.find("meta", {"property": type_}):
-            src = soup.find("meta", {"property": type_})
+    if not src:
+        src = soup.find("meta", {"property": "og:image:url"})
 
     if not src:
         return False
 
-    if not title and soup.find("title"):
-        title = soup.find("title").text
+    if not title:
+        title = soup.find("title").text if soup.find("title") else "UNKNOWN_TITLE"
 
     title_parts = title.split("by ")
 
-    if not user and len(title_parts) > 1:
-        user = title_parts[1].split(" |")[0]
+    if not user:
+        user = title_parts[1].split(" |")[0] if len(title_parts) > 1 else "UNKNOWN_USER"
 
     return store_link(link=src.attrs["content"], title=title, user=user)
-
-
-# def download_redgifs():
-#     logging.info("Downloading Redgifs content 🔴")
-#     counter = 0
-#
-#     for link in redgif_links:
-#         soup = BeautifulSoup(safely_request_content(link), "html.parser")
-#         redgif_src = soup.find("meta", {"property": "og:video"}).attrs["content"]
-#         title = soup.find("title").text
-#         user = title.split("by ")[1].split(" |")[0]
-#
-#         if store_content_link(link=redgif_src, title=title, user=user):
-#             counter += 1
-#
-#     logging.info(f"{counter} Redgifs files saved")
 
 
 def get_redgifs_link(post):
@@ -208,6 +203,9 @@ def centralize_at_element(element):
 
 
 def expand_posts_for_details(composite_posts):
+    if args.only_videos:
+        return
+
     for post in composite_posts:
         expand_button_probe = post.find_elements(By.CSS_SELECTOR,
                                                  "div[data-click-id='body'] button[aria-label='Expand content']")
@@ -323,8 +321,6 @@ def store_link(link, user, title):
 
 
 def inspect_posts_for_content(elements_grid):
-    easy_posts = []
-
     for element in elements_grid:
         centralize_at_element(element)
         href_probe = element.find_elements(By.TAG_NAME, "a")
@@ -353,10 +349,6 @@ def inspect_posts_for_content(elements_grid):
         else:
             expand_posts_for_details([element])
 
-        easy_posts.append(element)
-
-    return easy_posts
-
 
 def store_sub_content_urls():
     sub_posts_xpath = "//*[@id='AppRouter-main-content']/div/div/div[2]/div[4]/div[1]/div[5]/div"
@@ -370,7 +362,7 @@ def store_sub_content_urls():
 
 def download_content():
     logging.info("Downloading content")
-    sub_content_map_size = round(len(master_content_map) / THREADS_TO_USE)
+    sub_content_map_size = math.ceil(len(master_content_map) / THREADS_TO_USE)
 
     while len(master_content_map) > 0:
         sub_content_map = {}
