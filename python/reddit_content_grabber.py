@@ -22,21 +22,19 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as ec
 
-REDDIT_LOGIN_URL = "https://www.reddit.com/login"
-REDDIT_PROFILE_URL = "https://www.reddit.com/user"
-REDDIT_SUB_URL = "https://www.reddit.com/r"
-IMAGE_OUTPUT_DIR = None
-VIDEO_OUTPUT_DIR = None
+REDDIT_URL = "https://www.reddit.com"
+IMAGE_FILE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif', '.pjpg')
 WEBDRIVER_RENDER_TIMEOUT_SECONDS = 5
-DETAIL_EXPANSION_RETRY_SECONDS = 5
+POST_EXPANSION_RETRY_SECONDS = 5
 MAX_REQUEST_RETRIES = 5
 THREADS_TO_USE = 8
 
 args: Namespace
 driver: Chrome
-hashes = []
-redgif_links = set()
+stored_content_hashes = []
 master_content_map = {}
+image_output_dir = None
+video_output_dir = None
 files_saved_counter = 0
 
 
@@ -65,7 +63,7 @@ def wait_until_visible(locator):
 
 def login():
     logging.info("Logging in")
-    driver.get(REDDIT_LOGIN_URL)
+    driver.get(f"{REDDIT_URL}/login")
     driver.find_element(By.ID, "loginUsername").send_keys(args.username)
     driver.find_element(By.ID, "loginPassword").send_keys(args.password)
     driver.find_element(By.TAG_NAME, "button").click()
@@ -80,7 +78,7 @@ def file_is_downloadable(name):
         return name.endswith('.gif')
 
     else:
-        return name.endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif', '.pjpg'))
+        return name.endswith(IMAGE_FILE_EXTENSIONS)
 
 
 def file_is_type(name, extension):
@@ -89,7 +87,7 @@ def file_is_type(name, extension):
 
 
 def file_is_image(extension):
-    return extension.lower() in ['png', 'jpg', 'jpeg', 'tiff', 'bmp', 'gif', "pjpg"]
+    return extension.lower() in IMAGE_FILE_EXTENSIONS
 
 
 def page_scroll(key):
@@ -100,7 +98,7 @@ def page_scroll(key):
 
 
 def store_user_content_urls():
-    driver.get(f"{REDDIT_PROFILE_URL}/{args.target}/submitted")
+    driver.get(f"{REDDIT_URL}/user/{args.target}/submitted")
     user_posts_xpath = "//*[@id='AppRouter-main-content']/div/div/div[2]/div[3]/div[1]/div[3]/div"
     store_content_urls(user_posts_xpath)
 
@@ -122,16 +120,15 @@ def store_content_urls(grid_elements_xpath, max_posts_to_inspect=None):
 
 def setup_output_directories():
     logging.info("Setting up directories")
-    base_output_dir = args.target if args.target else args.sub
-    base_output_dir = f"{args.output}/{base_output_dir}"
+    base_output_dir = f"{args.output}/{args.target if args.target else args.sub}"
 
-    global IMAGE_OUTPUT_DIR
-    IMAGE_OUTPUT_DIR = f"{base_output_dir}/img"
-    os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
+    global image_output_dir
+    image_output_dir = f"{base_output_dir}/img"
+    os.makedirs(image_output_dir, exist_ok=True)
 
-    global VIDEO_OUTPUT_DIR
-    VIDEO_OUTPUT_DIR = f"{base_output_dir}/video"
-    os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True)
+    global video_output_dir
+    video_output_dir = f"{base_output_dir}/video"
+    os.makedirs(video_output_dir, exist_ok=True)
 
 
 def safely_request_content(url):
@@ -196,7 +193,7 @@ def toggle_complex_post_details(expand_button):
         except (ElementClickInterceptedException, ElementNotInteractableException):
             logging.warning("Error expanding complex post details, retrying...")
             page_scroll(Keys.PAGE_UP)
-            time.sleep(DETAIL_EXPANSION_RETRY_SECONDS)
+            time.sleep(POST_EXPANSION_RETRY_SECONDS)
 
 
 def centralize_at_element(element):
@@ -246,12 +243,12 @@ def sanitize_string(str_input):
 
 
 def is_duplicate(image_content):
-    global hashes
+    global stored_content_hashes
     image_hash = hashlib.md5(image_content).hexdigest()
-    is_duplicated = hashes.__contains__(image_hash)
+    is_duplicated = image_hash in stored_content_hashes
 
     if not is_duplicated:
-        hashes.append(image_hash)
+        stored_content_hashes.append(image_hash)
 
     return is_duplicated
 
@@ -306,7 +303,7 @@ def store_link(link, user, title):
     else:
         extension = name_parts[-1]
 
-    path = IMAGE_OUTPUT_DIR if file_is_image(extension) else VIDEO_OUTPUT_DIR
+    path = image_output_dir if file_is_image(extension) else video_output_dir
     local_path = f"{path}/{user}__{name_identifier}__{sanitize_string(title[:30])}.{extension}"
     content: bytes
     is_successful = False
@@ -358,7 +355,7 @@ def store_sub_content_urls():
     if args.max_files:
         max_files = int(args.max_files)
 
-    driver.get(f"{REDDIT_SUB_URL}/{args.sub}/")
+    driver.get(f"{REDDIT_URL}/r/{args.sub}/")
     set_classic_view_mode()
     store_content_urls(sub_posts_xpath, max_files)
 
