@@ -220,9 +220,9 @@ def get_args():
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("--target", "-t", required=False, help="Target page")
     arg_parser.add_argument("--output", "-o", required=True, help="Output directory")
-    arg_parser.add_argument("--headless", "-hl", action="store_true", help="Headless run")
+    arg_parser.add_argument("--headless", "-hl", action="store_true", help="Headless run (flag)")
     arg_parser.add_argument("--mode", "-m", default="v", help="Mode: v, t, f, s (video, thumbs, "
-                                                              "from text file, selected from directory)")
+                                                              "from text file or selected from directory)")
 
     return arg_parser.parse_args()
 
